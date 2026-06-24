@@ -69,6 +69,10 @@ Each simulation step applies gravity, wind, and turbulence to all unpinned parti
 
 After the solver pass, pinned particles are forced back to their fixed positions. The current particle grid is then converted into a triangle mesh. Per-vertex normals are recalculated from neighboring particle positions, uploaded to a dynamic OpenGL vertex buffer, and rendered with a small GLSL lighting shader.
 
+## Screenshot
+
+![Screenshot](screenshot.jpg)
+
 ## Important parameters
 
 The main simulation parameters are defined near the top of `Program.cs`:
