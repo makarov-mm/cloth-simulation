@@ -11,7 +11,7 @@
 //
 //   dotnet run -c Release
 //
-// Author: portfolio piece, no-library style (P/Invoke only).
+// Author: Mykhailo Makarov (m.m.makarov@gmail.com), no-library style (P/Invoke only).
 
 using System;
 using System.Collections.Generic;
@@ -19,20 +19,20 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 
+namespace Cloth;
+
 internal static class Program
 {
-    // ---- cloth parameters ------------------------------------------------
-    const int N = 64;        // grid resolution (N x N particles)
-    const float W = 2.0f;      // cloth width / height (world units)
+    const int N = 64; // grid resolution (N x N particles)
+    const float W = 2.0f; // cloth width / height (world units)
     const float Gravity = 9.8f;
-    const float Damp = 0.99f;     // Verlet velocity damping
+    const float Damp = 0.99f; // Verlet velocity damping
     const int SubSteps = 2;
-    const int Iters = 10;        // constraint relaxation passes
+    const int Iters = 10; // constraint relaxation passes
     const float Dt = 1f / 120f;
 
     static readonly Vector3 SphereC = new(0f, -0.15f, 0f);
     const float SphereR = 0.6f;
-    const float Thick = 0.02f;
 
     static Vector3[] Pos, Prev, PinPos;
     static bool[] Pinned;
@@ -40,10 +40,9 @@ internal static class Program
     struct Con { public int A, B; public float Rest; }
     static readonly List<Con> Cons = new();
 
-    static float[] MeshV;     // pos(3) + normal(3) per particle
-    static uint[] MeshI;     // triangle indices
+    static float[] MeshV; // pos(3) + normal(3) per particle
+    static uint[] MeshI; // triangle indices
     static int MeshICount;
-
     static float[] SphV;
     static uint[] SphI;
     static int SphICount;
@@ -176,18 +175,23 @@ internal static class Program
                 _w = Math.Max(1, lp & 0xFFFF);
                 _h = Math.Max(1, (lp >> 16) & 0xFFFF);
                 return IntPtr.Zero;
+
             case Win.WM_LBUTTONDOWN:
                 _grab = true; _mx = Short(lParam, 0); _my = Short(lParam, 16);
                 return IntPtr.Zero;
+
             case Win.WM_LBUTTONUP:
                 _grab = false;
                 return IntPtr.Zero;
+
             case Win.WM_RBUTTONDOWN:
                 _orbit = true; _lastX = Short(lParam, 0); _lastY = Short(lParam, 16);
                 return IntPtr.Zero;
+
             case Win.WM_RBUTTONUP:
                 _orbit = false;
                 return IntPtr.Zero;
+
             case Win.WM_MOUSEMOVE:
                 {
                     int x = Short(lParam, 0), y = Short(lParam, 16);
@@ -203,25 +207,27 @@ internal static class Program
                     }
                 }
                 return IntPtr.Zero;
+
             case Win.WM_MOUSEWHEEL:
                 int delta = (short)((((long)wParam) >> 16) & 0xFFFF);
                 _dist *= 1f - delta / 1200f;
                 if (_dist < 1.5f) _dist = 1.5f;
                 if (_dist > 14f) _dist = 14f;
                 return IntPtr.Zero;
+
             case Win.WM_DESTROY:
                 Win.PostQuitMessage(0);
                 return IntPtr.Zero;
         }
+
         return Win.DefWindowProcW(hWnd, msg, wParam, lParam);
     }
 
-    static int Short(IntPtr lParam, int shift) => (short)((((long)lParam) >> shift) & 0xFFFF);
+    private static int Short(IntPtr lParam, int shift) => (short)((((long)lParam) >> shift) & 0xFFFF);
 
-    static int Idx(int i, int j) => j * N + i;
+    private static int Idx(int i, int j) => j * N + i;
 
-    // ---- cloth setup -----------------------------------------------------
-    static void InitCloth()
+    private static void InitCloth()
     {
         int n = N * N;
         Pos = new Vector3[n]; Prev = new Vector3[n]; PinPos = new Vector3[n]; Pinned = new bool[n];
@@ -257,13 +263,13 @@ internal static class Program
             }
     }
 
-    static void Pin(int i, int j)
+    private static void Pin(int i, int j)
     {
         int k = Idx(i, j);
         Pinned[k] = true; PinPos[k] = Pos[k];
     }
 
-    static void Step(float t)
+    private static void Step(float t)
     {
         var grav = new Vector3(0f, -Gravity, 0f);
         var wind = new Vector3(0.5f * MathF.Sin(t * 0.9f),
@@ -305,11 +311,15 @@ internal static class Program
 
         // pin enforcement
         for (int k = 0; k < Pos.Length; k++)
-            if (Pinned[k]) { Pos[k] = PinPos[k]; Prev[k] = PinPos[k]; }
+        {
+            if (Pinned[k])
+            {
+                Pos[k] = PinPos[k]; Prev[k] = PinPos[k];
+            }
+        }
     }
 
-    // ---- mouse grab: drag the cloth around -------------------------------
-    static void HandleGrab(float[] mvp)
+    private static void HandleGrab(float[] mvp)
     {
         if (!_grab)
         {
@@ -354,15 +364,15 @@ internal static class Program
         Pinned[_grabIndex] = true;
     }
 
-    static Vector4 MulVec(float[] m, Vector3 p) => MulVec4(m, p.X, p.Y, p.Z, 1f);
+    private static Vector4 MulVec(float[] m, Vector3 p) => MulVec4(m, p.X, p.Y, p.Z, 1f);
 
-    static Vector4 MulVec4(float[] m, float x, float y, float z, float w) => new Vector4(
+    private static Vector4 MulVec4(float[] m, float x, float y, float z, float w) => new Vector4(
         m[0] * x + m[4] * y + m[8] * z + m[12] * w,
         m[1] * x + m[5] * y + m[9] * z + m[13] * w,
         m[2] * x + m[6] * y + m[10] * z + m[14] * w,
         m[3] * x + m[7] * y + m[11] * z + m[15] * w);
 
-    static float[] Invert(float[] m)
+    private static float[] Invert(float[] m)
     {
         var inv = new float[16];
         inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
@@ -389,8 +399,7 @@ internal static class Program
         return inv;
     }
 
-    // ---- mesh building ---------------------------------------------------
-    static void BuildClothMesh()
+    private static void BuildClothMesh()
     {
         if (MeshV == null)
         {
@@ -409,6 +418,7 @@ internal static class Program
         }
 
         for (int j = 0; j < N; j++)
+        {
             for (int i = 0; i < N; i++)
             {
                 int il = Math.Max(i - 1, 0), ir = Math.Min(i + 1, N - 1);
@@ -424,42 +434,10 @@ internal static class Program
                 MeshV[o] = p.X; MeshV[o + 1] = p.Y; MeshV[o + 2] = p.Z;
                 MeshV[o + 3] = nrm.X; MeshV[o + 4] = nrm.Y; MeshV[o + 5] = nrm.Z;
             }
-    }
-
-    static void BuildSphere(int stacks, int slices)
-    {
-        var verts = new List<float>();
-        var idx = new List<uint>();
-        for (int st = 0; st <= stacks; st++)
-        {
-            float v = st / (float)stacks;
-            float phi = v * MathF.PI;
-            for (int sl = 0; sl <= slices; sl++)
-            {
-                float u = sl / (float)slices;
-                float theta = u * MathF.PI * 2f;
-                var n = new Vector3(MathF.Sin(phi) * MathF.Cos(theta), MathF.Cos(phi), MathF.Sin(phi) * MathF.Sin(theta));
-                Vector3 p = SphereC + n * SphereR;
-                verts.Add(p.X); verts.Add(p.Y); verts.Add(p.Z);
-                verts.Add(n.X); verts.Add(n.Y); verts.Add(n.Z);
-            }
         }
-        int row = slices + 1;
-        for (int st = 0; st < stacks; st++)
-            for (int sl = 0; sl < slices; sl++)
-            {
-                uint a = (uint)(st * row + sl), b = (uint)(a + 1);
-                uint c = (uint)(a + row), d = (uint)(c + 1);
-                idx.Add(a); idx.Add(c); idx.Add(b);
-                idx.Add(b); idx.Add(c); idx.Add(d);
-            }
-        SphV = verts.ToArray();
-        SphI = idx.ToArray();
-        SphICount = SphI.Length;
     }
 
-    // ---- matrices --------------------------------------------------------
-    static float[] Perspective(float fovy, float aspect, float n, float f)
+    private static float[] Perspective(float fovy, float aspect, float n, float f)
     {
         float t = 1f / MathF.Tan(fovy * 0.5f);
         var m = new float[16];
@@ -469,43 +447,47 @@ internal static class Program
         return m;
     }
 
-    static float[] LookAt(Vector3 eye, Vector3 center, Vector3 up)
+    private static float[] LookAt(Vector3 eye, Vector3 center, Vector3 up)
     {
         var f = Vector3.Normalize(center - eye);
         var s = Vector3.Normalize(Vector3.Cross(f, up));
         var u = Vector3.Cross(s, f);
-        return new float[]
-        {
+
+        return
+        [
             s.X, u.X, -f.X, 0f,
             s.Y, u.Y, -f.Y, 0f,
             s.Z, u.Z, -f.Z, 0f,
-            -Vector3.Dot(s, eye), -Vector3.Dot(u, eye), Vector3.Dot(f, eye), 1f,
-        };
+            -Vector3.Dot(s, eye), -Vector3.Dot(u, eye), Vector3.Dot(f, eye), 1f
+        ];
     }
 
-    static float[] Mul(float[] a, float[] b)
+    private static float[] Mul(float[] a, float[] b)
     {
         var r = new float[16];
+
         for (int col = 0; col < 4; col++)
+        {
             for (int row = 0; row < 4; row++)
             {
                 float s = 0f;
                 for (int k = 0; k < 4; k++) s += a[k * 4 + row] * b[col * 4 + k];
                 r[col * 4 + row] = s;
             }
+        }
+
         return r;
     }
 
-    // ---- GPU helpers -----------------------------------------------------
-    static void MakeMeshVao(out uint vao, out uint vbo)
+    private static void MakeMeshVao(out uint vao, out uint vbo)
     {
-        BuildClothMesh();   // ensures MeshV/MeshI exist
+        BuildClothMesh(); // ensures MeshV/MeshI exist
         vao = 0; vbo = 0;
         GL.glGenVertexArrays(1, ref vao);
         GL.glBindVertexArray(vao);
         GL.glGenBuffers(1, ref vbo);
         GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo);
-        GL.glBufferData(GL.GL_ARRAY_BUFFER, (IntPtr)(MeshV.Length * sizeof(float)), IntPtr.Zero, GL.GL_DYNAMIC_DRAW);
+        GL.glBufferData(GL.GL_ARRAY_BUFFER, MeshV.Length * sizeof(float), IntPtr.Zero, GL.GL_DYNAMIC_DRAW);
         uint ebo = 0;
         GL.glGenBuffers(1, ref ebo);
         GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, ebo);
@@ -513,7 +495,7 @@ internal static class Program
         SetPosNormalAttribs();
     }
 
-    static void MakeStaticVao(float[] verts, uint[] indices, out uint vao)
+    private static void MakeStaticVao(float[] verts, uint[] indices, out uint vao)
     {
         vao = 0; uint vbo = 0, ebo = 0;
         GL.glGenVertexArrays(1, ref vao);
@@ -527,44 +509,61 @@ internal static class Program
         SetPosNormalAttribs();
     }
 
-    static void SetPosNormalAttribs()
+    private static void SetPosNormalAttribs()
     {
         int stride = 6 * sizeof(float);
-        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, 0, stride, (IntPtr)0);
+        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, 0, stride, 0);
         GL.glEnableVertexAttribArray(0);
-        GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, 0, stride, (IntPtr)(3 * sizeof(float)));
+        GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, 0, stride, 3 * sizeof(float));
         GL.glEnableVertexAttribArray(1);
     }
 
-    static void UploadCloth(uint vbo)
+    private static void UploadCloth(uint vbo)
     {
         GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo);
         GCHandle h = GCHandle.Alloc(MeshV, GCHandleType.Pinned);
+
         try
         {
-            GL.glBufferData(GL.GL_ARRAY_BUFFER, (IntPtr)(MeshV.Length * sizeof(float)),
-                            h.AddrOfPinnedObject(), GL.GL_DYNAMIC_DRAW);
+            GL.glBufferData(GL.GL_ARRAY_BUFFER, MeshV.Length * sizeof(float), h.AddrOfPinnedObject(), GL.GL_DYNAMIC_DRAW);
         }
-        finally { h.Free(); }
+        finally
+        {
+            h.Free();
+        }
     }
 
-    static void UploadF(uint target, float[] data, uint usage)
+    private static void UploadF(uint target, float[] data, uint usage)
     {
         GCHandle h = GCHandle.Alloc(data, GCHandleType.Pinned);
-        try { GL.glBufferData(target, (IntPtr)(data.Length * sizeof(float)), h.AddrOfPinnedObject(), usage); }
-        finally { h.Free(); }
+
+        try
+        {
+            GL.glBufferData(target, data.Length * sizeof(float), h.AddrOfPinnedObject(), usage);
+        }
+        finally
+        {
+            h.Free();
+        }
     }
 
-    static void UploadU(uint target, uint[] data)
+    private static void UploadU(uint target, uint[] data)
     {
         GCHandle h = GCHandle.Alloc(data, GCHandleType.Pinned);
-        try { GL.glBufferData(target, (IntPtr)(data.Length * sizeof(uint)), h.AddrOfPinnedObject(), GL.GL_STATIC_DRAW); }
-        finally { h.Free(); }
+
+        try
+        {
+            GL.glBufferData(target, data.Length * sizeof(uint), h.AddrOfPinnedObject(), GL.GL_STATIC_DRAW);
+        }
+        finally
+        {
+            h.Free();
+        }
     }
 
-    static uint MakeQuadVao()
+    private static uint MakeQuadVao()
     {
-        float[] q = { -1f, -1f, 0f, 0f, 1f, -1f, 1f, 0f, -1f, 1f, 0f, 1f, 1f, 1f, 1f, 1f };
+        float[] q = [-1f, -1f, 0f, 0f, 1f, -1f, 1f, 0f, -1f, 1f, 0f, 1f, 1f, 1f, 1f, 1f];
         uint vao = 0, vbo = 0;
         GL.glGenVertexArrays(1, ref vao);
         GL.glBindVertexArray(vao);
@@ -572,15 +571,14 @@ internal static class Program
         GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo);
         UploadF(GL.GL_ARRAY_BUFFER, q, GL.GL_STATIC_DRAW);
         int stride = 4 * sizeof(float);
-        GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, 0, stride, (IntPtr)0);
+        GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, 0, stride, 0);
         GL.glEnableVertexAttribArray(0);
-        GL.glVertexAttribPointer(1, 2, GL.GL_FLOAT, 0, stride, (IntPtr)(2 * sizeof(float)));
+        GL.glVertexAttribPointer(1, 2, GL.GL_FLOAT, 0, stride, 2 * sizeof(float));
         GL.glEnableVertexAttribArray(1);
         return vao;
     }
 
-    // ---- shaders ---------------------------------------------------------
-    const string LitVS = @"#version 330 core
+    private const string LitVS = @"#version 330 core
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNormal;
 uniform mat4 uMVP;
@@ -592,7 +590,7 @@ void main(){
     gl_Position = uMVP * vec4(aPos, 1.0);
 }";
 
-    const string LitFS = @"#version 330 core
+    private const string LitFS = @"#version 330 core
 in vec3 vN;
 in vec3 vW;
 uniform vec3 uCam;
@@ -615,14 +613,14 @@ void main(){
     FragColor = vec4(pow(col, vec3(0.85)), 1.0);
 }";
 
-    const string QuadVS = @"#version 330 core
+    private const string QuadVS = @"#version 330 core
 layout(location=0) in vec2 aPos;
 layout(location=1) in vec2 aUV;
 uniform vec2 uScale;
 out vec2 vUV;
 void main(){ vUV = aUV; gl_Position = vec4(aPos * uScale, 0.0, 1.0); }";
 
-    const string GradFS = @"#version 330 core
+    private const string GradFS = @"#version 330 core
 in vec2 vUV;
 out vec4 FragColor;
 void main(){
@@ -631,7 +629,7 @@ void main(){
     FragColor = vec4(c, 1.0);
 }";
 
-    static uint BuildProgram(string vsSrc, string fsSrc)
+    private static uint BuildProgram(string vsSrc, string fsSrc)
     {
         uint vs = Compile(GL.GL_VERTEX_SHADER, vsSrc);
         uint fs = Compile(GL.GL_FRAGMENT_SHADER, fsSrc);
@@ -640,41 +638,53 @@ void main(){
         GL.glAttachShader(p, fs);
         GL.glLinkProgram(p);
         int ok = 0; GL.glGetProgramiv(p, GL.GL_LINK_STATUS, ref ok);
+
         if (ok == 0)
         {
             var log = new byte[2048]; int len = 0;
             GL.glGetProgramInfoLog(p, log.Length, ref len, log);
             throw new Exception("Link error: " + System.Text.Encoding.ASCII.GetString(log, 0, len));
         }
+
         GL.glDeleteShader(vs); GL.glDeleteShader(fs);
         return p;
     }
 
-    static uint Compile(uint type, string src)
+    private static uint Compile(uint type, string src)
     {
         uint sh = GL.glCreateShader(type);
         IntPtr str = Marshal.StringToHGlobalAnsi(src);
-        try { GL.glShaderSource(sh, 1, new[] { str }, IntPtr.Zero); }
-        finally { Marshal.FreeHGlobal(str); }
+
+        try
+        {
+            GL.glShaderSource(sh, 1, [str], IntPtr.Zero);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(str);
+        }
+
         GL.glCompileShader(sh);
         int ok = 0; GL.glGetShaderiv(sh, GL.GL_COMPILE_STATUS, ref ok);
+
         if (ok == 0)
         {
             var log = new byte[2048]; int len = 0;
             GL.glGetShaderInfoLog(sh, log.Length, ref len, log);
             throw new Exception("Compile error: " + System.Text.Encoding.ASCII.GetString(log, 0, len));
         }
+
         return sh;
     }
 
-    static byte[] Ascii(string s)
+    private static byte[] Ascii(string s)
     {
         var b = new byte[s.Length + 1];
         System.Text.Encoding.ASCII.GetBytes(s, 0, s.Length, b, 0);
         return b;
     }
 
-    static IntPtr CreateGLContext(IntPtr hdc)
+    private static IntPtr CreateGLContext(IntPtr hdc)
     {
         var pfd = new Win.PIXELFORMATDESCRIPTOR
         {
@@ -687,19 +697,22 @@ void main(){
             cStencilBits = 8,
             iLayerType = Win.PFD_MAIN_PLANE,
         };
+
         int fmt = Win.ChoosePixelFormat(hdc, ref pfd);
+
         if (fmt == 0) throw new Exception("ChoosePixelFormat failed");
         if (!Win.SetPixelFormat(hdc, fmt, ref pfd)) throw new Exception("SetPixelFormat failed");
 
         IntPtr tmp = Win.wglCreateContext(hdc);
         Win.wglMakeCurrent(hdc, tmp);
-
         IntPtr proc = Win.wglGetProcAddress("wglCreateContextAttribsARB");
+
         if (proc != IntPtr.Zero)
         {
             var create = Marshal.GetDelegateForFunctionPointer<GL.WglCreateContextAttribsARB>(proc);
-            int[] attribs = { 0x2091, 3, 0x2092, 3, 0x9126, 0x0001, 0 };
-            IntPtr core = create(hdc, IntPtr.Zero, attribs);
+            int[] attributes = [0x2091, 3, 0x2092, 3, 0x9126, 0x0001, 0];
+            IntPtr core = create(hdc, IntPtr.Zero, attributes);
+
             if (core != IntPtr.Zero)
             {
                 Win.wglMakeCurrent(hdc, core);
@@ -707,229 +720,7 @@ void main(){
                 return core;
             }
         }
+
         return tmp;
     }
-}
-
-// =========================================================================
-//  OpenGL entry points
-// =========================================================================
-internal static class GL
-{
-    public const uint GL_COLOR_BUFFER_BIT = 0x4000;
-    public const uint GL_DEPTH_BUFFER_BIT = 0x0100;
-    public const uint GL_DEPTH_TEST = 0x0B71;
-    public const uint GL_FLOAT = 0x1406;
-    public const uint GL_UNSIGNED_INT = 0x1405;
-    public const uint GL_ARRAY_BUFFER = 0x8892;
-    public const uint GL_ELEMENT_ARRAY_BUFFER = 0x8893;
-    public const uint GL_STATIC_DRAW = 0x88E4;
-    public const uint GL_DYNAMIC_DRAW = 0x88E8;
-    public const uint GL_VERTEX_SHADER = 0x8B31;
-    public const uint GL_FRAGMENT_SHADER = 0x8B30;
-    public const uint GL_COMPILE_STATUS = 0x8B81;
-    public const uint GL_LINK_STATUS = 0x8B82;
-    public const uint GL_TRIANGLES = 0x0004;
-    public const uint GL_TRIANGLE_STRIP = 0x0005;
-
-    [DllImport("opengl32.dll")] public static extern void glClear(uint mask);
-    [DllImport("opengl32.dll")] public static extern void glClearColor(float r, float g, float b, float a);
-    [DllImport("opengl32.dll")] public static extern void glViewport(int x, int y, int w, int h);
-    [DllImport("opengl32.dll")] public static extern void glEnable(uint cap);
-    [DllImport("opengl32.dll")] public static extern void glDisable(uint cap);
-    [DllImport("opengl32.dll")] public static extern void glDrawArrays(uint mode, int first, int count);
-    [DllImport("opengl32.dll")] public static extern void glDrawElements(uint mode, int count, uint type, IntPtr indices);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate uint GlCreateShaderD(uint type);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlShaderSourceD(uint s, int c, IntPtr[] str, IntPtr len);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlCompileShaderD(uint s);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlGetShaderivD(uint s, uint p, ref int v);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlGetShaderInfoLogD(uint s, int max, ref int len, byte[] log);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate uint GlCreateProgramD();
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlAttachShaderD(uint p, uint s);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlLinkProgramD(uint p);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlGetProgramivD(uint p, uint pn, ref int v);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlGetProgramInfoLogD(uint p, int max, ref int len, byte[] log);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlUseProgramD(uint p);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlDeleteShaderD(uint s);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate int GlGetUniformLocationD(uint p, byte[] name);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlUniform2fD(int loc, float a, float b);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlUniform3fD(int loc, float a, float b, float c);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlUniformMatrix4fvD(int loc, int count, byte transpose, float[] value);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlGenD(int n, ref uint id);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlBindVertexArrayD(uint a);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlBindBufferD(uint t, uint b);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlBufferDataD(uint t, IntPtr size, IntPtr data, uint usage);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlVertexAttribPointerD(uint i, int size, uint type, byte norm, int stride, IntPtr ptr);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlEnableVertexAttribArrayD(uint i);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate int WglSwapIntervalEXTD(int interval);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate IntPtr WglCreateContextAttribsARB(IntPtr hdc, IntPtr share, int[] attribs);
-
-    public static GlCreateShaderD glCreateShader;
-    public static GlShaderSourceD glShaderSource;
-    public static GlCompileShaderD glCompileShader;
-    public static GlGetShaderivD glGetShaderiv;
-    public static GlGetShaderInfoLogD glGetShaderInfoLog;
-    public static GlCreateProgramD glCreateProgram;
-    public static GlAttachShaderD glAttachShader;
-    public static GlLinkProgramD glLinkProgram;
-    public static GlGetProgramivD glGetProgramiv;
-    public static GlGetProgramInfoLogD glGetProgramInfoLog;
-    public static GlUseProgramD glUseProgram;
-    public static GlDeleteShaderD glDeleteShader;
-    public static GlGetUniformLocationD glGetUniformLocation;
-    public static GlUniform2fD glUniform2f;
-    public static GlUniform3fD glUniform3f;
-    public static GlUniformMatrix4fvD glUniformMatrix4fv;
-    public static GlGenD glGenVertexArrays;
-    public static GlGenD glGenBuffers;
-    public static GlBindVertexArrayD glBindVertexArray;
-    public static GlBindBufferD glBindBuffer;
-    public static GlBufferDataD glBufferData;
-    public static GlVertexAttribPointerD glVertexAttribPointer;
-    public static GlEnableVertexAttribArrayD glEnableVertexAttribArray;
-    public static WglSwapIntervalEXTD wglSwapIntervalEXT;
-
-    static T Get<T>(string name) where T : Delegate
-    {
-        IntPtr p = Win.wglGetProcAddress(name);
-        long v = (long)p;
-        if (p == IntPtr.Zero || v == 1 || v == 2 || v == 3 || v == -1)
-            throw new Exception("Failed to load GL function: " + name);
-        return Marshal.GetDelegateForFunctionPointer<T>(p);
-    }
-
-    public static void Load()
-    {
-        glCreateShader = Get<GlCreateShaderD>("glCreateShader");
-        glShaderSource = Get<GlShaderSourceD>("glShaderSource");
-        glCompileShader = Get<GlCompileShaderD>("glCompileShader");
-        glGetShaderiv = Get<GlGetShaderivD>("glGetShaderiv");
-        glGetShaderInfoLog = Get<GlGetShaderInfoLogD>("glGetShaderInfoLog");
-        glCreateProgram = Get<GlCreateProgramD>("glCreateProgram");
-        glAttachShader = Get<GlAttachShaderD>("glAttachShader");
-        glLinkProgram = Get<GlLinkProgramD>("glLinkProgram");
-        glGetProgramiv = Get<GlGetProgramivD>("glGetProgramiv");
-        glGetProgramInfoLog = Get<GlGetProgramInfoLogD>("glGetProgramInfoLog");
-        glUseProgram = Get<GlUseProgramD>("glUseProgram");
-        glDeleteShader = Get<GlDeleteShaderD>("glDeleteShader");
-        glGetUniformLocation = Get<GlGetUniformLocationD>("glGetUniformLocation");
-        glUniform2f = Get<GlUniform2fD>("glUniform2f");
-        glUniform3f = Get<GlUniform3fD>("glUniform3f");
-        glUniformMatrix4fv = Get<GlUniformMatrix4fvD>("glUniformMatrix4fv");
-        glGenVertexArrays = Get<GlGenD>("glGenVertexArrays");
-        glGenBuffers = Get<GlGenD>("glGenBuffers");
-        glBindVertexArray = Get<GlBindVertexArrayD>("glBindVertexArray");
-        glBindBuffer = Get<GlBindBufferD>("glBindBuffer");
-        glBufferData = Get<GlBufferDataD>("glBufferData");
-        glVertexAttribPointer = Get<GlVertexAttribPointerD>("glVertexAttribPointer");
-        glEnableVertexAttribArray = Get<GlEnableVertexAttribArrayD>("glEnableVertexAttribArray");
-
-        IntPtr swap = Win.wglGetProcAddress("wglSwapIntervalEXT");
-        if (swap != IntPtr.Zero && (long)swap > 3)
-            wglSwapIntervalEXT = Marshal.GetDelegateForFunctionPointer<WglSwapIntervalEXTD>(swap);
-    }
-}
-
-// =========================================================================
-//  Win32 / GDI / WGL P/Invoke
-// =========================================================================
-internal static class Win
-{
-    public const uint CS_VREDRAW = 0x0001, CS_HREDRAW = 0x0002, CS_OWNDC = 0x0020;
-    public const uint WS_VISIBLE = 0x10000000, WS_OVERLAPPEDWINDOW = 0x00CF0000;
-    public const int CW_USEDEFAULT = unchecked((int)0x80000000);
-    public const int IDC_ARROW = 32512;
-    public const uint PM_REMOVE = 0x0001;
-    public const uint WM_DESTROY = 0x0002, WM_SIZE = 0x0005, WM_QUIT = 0x0012;
-    public const uint WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202, WM_MOUSEWHEEL = 0x020A;
-    public const uint WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205;
-
-    public const uint PFD_DRAW_TO_WINDOW = 0x00000004;
-    public const uint PFD_SUPPORT_OPENGL = 0x00000020;
-    public const uint PFD_DOUBLEBUFFER = 0x00000001;
-    public const byte PFD_TYPE_RGBA = 0;
-    public const byte PFD_MAIN_PLANE = 0;
-
-    public delegate IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    public struct WNDCLASSEX
-    {
-        public uint cbSize;
-        public uint style;
-        public IntPtr lpfnWndProc;
-        public int cbClsExtra;
-        public int cbWndExtra;
-        public IntPtr hInstance;
-        public IntPtr hIcon;
-        public IntPtr hCursor;
-        public IntPtr hbrBackground;
-        [MarshalAs(UnmanagedType.LPWStr)] public string lpszMenuName;
-        [MarshalAs(UnmanagedType.LPWStr)] public string lpszClassName;
-        public IntPtr hIconSm;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct MSG
-    {
-        public IntPtr hwnd;
-        public uint message;
-        public IntPtr wParam;
-        public IntPtr lParam;
-        public uint time;
-        public int pt_x;
-        public int pt_y;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct RECT { public int left, top, right, bottom; }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct PIXELFORMATDESCRIPTOR
-    {
-        public ushort nSize;
-        public ushort nVersion;
-        public uint dwFlags;
-        public byte iPixelType;
-        public byte cColorBits;
-        public byte cRedBits, cRedShift, cGreenBits, cGreenShift, cBlueBits, cBlueShift;
-        public byte cAlphaBits, cAlphaShift;
-        public byte cAccumBits, cAccumRedBits, cAccumGreenBits, cAccumBlueBits, cAccumAlphaBits;
-        public byte cDepthBits, cStencilBits, cAuxBuffers;
-        public byte iLayerType, bReserved;
-        public uint dwLayerMask, dwVisibleMask, dwDamageMask;
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern IntPtr GetModuleHandleW(IntPtr lpModuleName);
-
-    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    public static extern ushort RegisterClassExW(ref WNDCLASSEX wc);
-
-    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    public static extern IntPtr CreateWindowExW(
-        uint exStyle, string className, string windowName, uint style,
-        int x, int y, int w, int h, IntPtr parent, IntPtr menu, IntPtr hInstance, IntPtr param);
-
-    [DllImport("user32.dll")] public static extern IntPtr DefWindowProcW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-    [DllImport("user32.dll")] public static extern void PostQuitMessage(int code);
-    [DllImport("user32.dll")] public static extern IntPtr LoadCursorW(IntPtr hInstance, IntPtr lpCursorName);
-    [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr hWnd, IntPtr hdc);
-    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT rc);
-
-    [DllImport("user32.dll")] public static extern bool PeekMessageW(out MSG msg, IntPtr hWnd, uint min, uint max, uint remove);
-    [DllImport("user32.dll")] public static extern bool TranslateMessage(ref MSG msg);
-    [DllImport("user32.dll")] public static extern IntPtr DispatchMessageW(ref MSG msg);
-
-    [DllImport("gdi32.dll")] public static extern int ChoosePixelFormat(IntPtr hdc, ref PIXELFORMATDESCRIPTOR pfd);
-    [DllImport("gdi32.dll")] public static extern bool SetPixelFormat(IntPtr hdc, int fmt, ref PIXELFORMATDESCRIPTOR pfd);
-    [DllImport("gdi32.dll")] public static extern bool SwapBuffers(IntPtr hdc);
-
-    [DllImport("opengl32.dll")] public static extern IntPtr wglCreateContext(IntPtr hdc);
-    [DllImport("opengl32.dll")] public static extern bool wglMakeCurrent(IntPtr hdc, IntPtr ctx);
-    [DllImport("opengl32.dll")] public static extern bool wglDeleteContext(IntPtr ctx);
-    [DllImport("opengl32.dll", CharSet = CharSet.Ansi)]
-    public static extern IntPtr wglGetProcAddress(string name);
 }
