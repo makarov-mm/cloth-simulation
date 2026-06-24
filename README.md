@@ -6,6 +6,9 @@ The program simulates a hanging sheet of cloth as a grid of point masses connect
 
 This is intentionally a small, low-dependency graphics/physics demo: there are no NuGet packages, no game engine, no OpenGL wrapper, and no external assets. Window creation, input handling, WGL context creation, OpenGL function loading, shaders, mesh generation, and simulation logic are implemented directly in `Program.cs`.
 
+## Screenshot
+![Screenshot](screenshot.jpg) 
+
 ## Features
 
 - Real-time cloth simulation on a `64 x 64` particle grid.
