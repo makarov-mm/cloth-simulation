@@ -20,6 +20,18 @@ internal static class GL
     public const uint GL_LINK_STATUS = 0x8B82;
     public const uint GL_TRIANGLES = 0x0004;
     public const uint GL_TRIANGLE_STRIP = 0x0005;
+    public const uint GL_TEXTURE_2D = 0x0DE1;
+    public const uint GL_TEXTURE0 = 0x84C0;
+    public const uint GL_RGB = 0x1907;
+    public const uint GL_RGB8 = 0x8051;
+    public const uint GL_UNSIGNED_BYTE = 0x1401;
+    public const uint GL_TEXTURE_MIN_FILTER = 0x2801;
+    public const uint GL_TEXTURE_MAG_FILTER = 0x2800;
+    public const uint GL_TEXTURE_WRAP_S = 0x2802;
+    public const uint GL_TEXTURE_WRAP_T = 0x2803;
+    public const uint GL_LINEAR = 0x2601;
+    public const uint GL_LINEAR_MIPMAP_LINEAR = 0x2703;
+    public const uint GL_REPEAT = 0x2901;
 
     [DllImport("opengl32.dll")] public static extern void glClear(uint mask);
     [DllImport("opengl32.dll")] public static extern void glClearColor(float r, float g, float b, float a);
@@ -28,6 +40,10 @@ internal static class GL
     [DllImport("opengl32.dll")] public static extern void glDisable(uint cap);
     [DllImport("opengl32.dll")] public static extern void glDrawArrays(uint mode, int first, int count);
     [DllImport("opengl32.dll")] public static extern void glDrawElements(uint mode, int count, uint type, IntPtr indices);
+    [DllImport("opengl32.dll")] public static extern void glGenTextures(int n, ref uint textures);
+    [DllImport("opengl32.dll")] public static extern void glBindTexture(uint target, uint tex);
+    [DllImport("opengl32.dll")] public static extern void glTexParameteri(uint target, uint pname, int param);
+    [DllImport("opengl32.dll")] public static extern void glTexImage2D(uint target, int level, int internalFormat, int width, int height, int border, uint format, uint type, IntPtr pixels);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate uint GlCreateShaderD(uint type);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlShaderSourceD(uint s, int c, IntPtr[] str, IntPtr len);
@@ -51,6 +67,9 @@ internal static class GL
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlBufferDataD(uint t, IntPtr size, IntPtr data, uint usage);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlVertexAttribPointerD(uint i, int size, uint type, byte norm, int stride, IntPtr ptr);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlEnableVertexAttribArrayD(uint i);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlActiveTextureD(uint tex);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlUniform1iD(int loc, int v);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlGenerateMipmapD(uint target);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate int WglSwapIntervalEXTD(int interval);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate IntPtr WglCreateContextAttribsARB(IntPtr hdc, IntPtr share, int[] attribs);
 
@@ -77,6 +96,9 @@ internal static class GL
     public static GlBufferDataD glBufferData;
     public static GlVertexAttribPointerD glVertexAttribPointer;
     public static GlEnableVertexAttribArrayD glEnableVertexAttribArray;
+    public static GlActiveTextureD glActiveTexture;
+    public static GlUniform1iD glUniform1i;
+    public static GlGenerateMipmapD glGenerateMipmap;
     public static WglSwapIntervalEXTD wglSwapIntervalEXT;
 
     static T Get<T>(string name) where T : Delegate
@@ -117,6 +139,9 @@ internal static class GL
         glBufferData = Get<GlBufferDataD>("glBufferData");
         glVertexAttribPointer = Get<GlVertexAttribPointerD>("glVertexAttribPointer");
         glEnableVertexAttribArray = Get<GlEnableVertexAttribArrayD>("glEnableVertexAttribArray");
+        glActiveTexture = Get<GlActiveTextureD>("glActiveTexture");
+        glUniform1i = Get<GlUniform1iD>("glUniform1i");
+        glGenerateMipmap = Get<GlGenerateMipmapD>("glGenerateMipmap");
 
         IntPtr swap = Win.wglGetProcAddress("wglSwapIntervalEXT");
 

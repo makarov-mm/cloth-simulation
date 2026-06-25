@@ -3,11 +3,13 @@
 //
 //   A grid of point masses is integrated with Verlet integration and held
 //   together by distance constraints (structural, shear and bend), solved with
-//   several Position-Based-Dynamics relaxation passes per frame. The sheet hangs
-//   from its top corners, is pushed by wind, and drapes over a sphere it collides
-//   with. The result is rebuilt into a lit, two-sided triangle mesh every frame.
+//   several Position-Based-Dynamics relaxation passes per frame. Particle
+//   self-collision (via a uniform spatial hash) keeps folds from passing through
+//   each other. The sheet hangs from its top corners, is pushed by wind, and is
+//   rebuilt every frame into a lit, two-sided, UV-textured triangle mesh with a
+//   procedurally generated woven fabric texture.
 //
-//   Drag with the left mouse button to orbit, mouse wheel to zoom.
+//   Left mouse drags the cloth, right mouse orbits the camera, wheel zooms.
 //
 //   dotnet run -c Release
 //
@@ -31,6 +33,9 @@ internal static class Program
     const int Iters = 10; // constraint relaxation passes
     const float Dt = 1f / 120f;
 
+    static readonly float Spacing = W / (N - 1);
+    static readonly float ColRadius = 0.38f * Spacing; // self-collision particle radius (< rest spacing)
+
     static readonly Vector3 SphereC = new(0f, -0.15f, 0f);
     const float SphereR = 0.6f;
 
@@ -40,9 +45,10 @@ internal static class Program
     struct Con { public int A, B; public float Rest; }
     static readonly List<Con> Cons = new();
 
-    static float[] MeshV; // pos(3) + normal(3) per particle
+    static float[] MeshV; // pos(3) + normal(3) + uv(2) per particle
     static uint[] MeshI; // triangle indices
     static int MeshICount;
+    static uint _fabricTex;
     static float[] SphV;
     static uint[] SphI;
     static int SphICount;
@@ -107,6 +113,8 @@ internal static class Program
 
         uint quadVao = MakeQuadVao();
         MakeMeshVao(out uint clothVao, out uint clothVbo);
+        _fabricTex = MakeFabricTexture(512);
+        int uTex = GL.glGetUniformLocation(litProg, Ascii("uTex"));
 
         var clock = Stopwatch.StartNew();
 
@@ -151,6 +159,9 @@ internal static class Program
             GL.glUniformMatrix4fv(uMVP, 1, 0, mvp);
             GL.glUniform3f(uCam, eye.X, eye.Y, eye.Z);
             GL.glUniform3f(uLight, 0.4f, 0.85f, 0.5f);
+            GL.glActiveTexture(GL.GL_TEXTURE0);
+            GL.glBindTexture(GL.GL_TEXTURE_2D, _fabricTex);
+            GL.glUniform1i(uTex, 0);
 
             // cloth (two-sided)
             GL.glUniform3f(uFront, 0.85f, 0.12f, 0.22f);
@@ -309,6 +320,8 @@ internal static class Program
             }
         }
 
+        SelfCollide();
+
         // pin enforcement
         for (int k = 0; k < Pos.Length; k++)
         {
@@ -316,6 +329,58 @@ internal static class Program
             {
                 Pos[k] = PinPos[k]; Prev[k] = PinPos[k];
             }
+        }
+    }
+
+    // Particle-vs-particle self-collision via a uniform spatial hash. Particles
+    // closer than 2*ColRadius are pushed apart, so folds of the sheet no longer
+    // pass through each other. Cell size = collision diameter, so each particle
+    // only needs to test its own cell and the 26 neighbours.
+    private static void SelfCollide()
+    {
+        float minD = 2f * ColRadius;
+        float cell = minD;
+        var grid = new Dictionary<long, List<int>>(Pos.Length);
+
+        static long Key(int x, int y, int z) =>
+            (long)(uint)(x + 1024) | ((long)(uint)(y + 1024) << 21) | ((long)(uint)(z + 1024) << 42);
+
+        for (int k = 0; k < Pos.Length; k++)
+        {
+            int gx = (int)MathF.Floor(Pos[k].X / cell);
+            int gy = (int)MathF.Floor(Pos[k].Y / cell);
+            int gz = (int)MathF.Floor(Pos[k].Z / cell);
+            long key = Key(gx, gy, gz);
+            if (!grid.TryGetValue(key, out var list)) { list = new List<int>(); grid[key] = list; }
+            list.Add(k);
+        }
+
+        for (int k = 0; k < Pos.Length; k++)
+        {
+            int gx = (int)MathF.Floor(Pos[k].X / cell);
+            int gy = (int)MathF.Floor(Pos[k].Y / cell);
+            int gz = (int)MathF.Floor(Pos[k].Z / cell);
+
+            for (int dz = -1; dz <= 1; dz++)
+                for (int dy = -1; dy <= 1; dy++)
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        if (!grid.TryGetValue(Key(gx + dx, gy + dy, gz + dz), out var list)) continue;
+                        foreach (int m in list)
+                        {
+                            if (m <= k) continue;
+                            Vector3 d = Pos[m] - Pos[k];
+                            float dist = d.Length();
+                            if (dist >= minD || dist < 1e-6f) continue;
+                            float wa = Pinned[k] ? 0f : 1f;
+                            float wb = Pinned[m] ? 0f : 1f;
+                            float ws = wa + wb;
+                            if (ws == 0f) continue;
+                            Vector3 corr = d * ((minD - dist) / dist);
+                            Pos[k] -= corr * (wa / ws);
+                            Pos[m] += corr * (wb / ws);
+                        }
+                    }
         }
     }
 
@@ -403,7 +468,7 @@ internal static class Program
     {
         if (MeshV == null)
         {
-            MeshV = new float[N * N * 6];
+            MeshV = new float[N * N * 8];
             var idx = new List<uint>();
             for (int j = 0; j < N - 1; j++)
                 for (int i = 0; i < N - 1; i++)
@@ -429,10 +494,12 @@ internal static class Program
                 float l = nrm.Length();
                 nrm = l > 1e-6f ? nrm / l : Vector3.UnitZ;
 
-                int o = Idx(i, j) * 6;
+                int o = Idx(i, j) * 8;
                 Vector3 p = Pos[Idx(i, j)];
                 MeshV[o] = p.X; MeshV[o + 1] = p.Y; MeshV[o + 2] = p.Z;
                 MeshV[o + 3] = nrm.X; MeshV[o + 4] = nrm.Y; MeshV[o + 5] = nrm.Z;
+                MeshV[o + 6] = i / (float)(N - 1);
+                MeshV[o + 7] = j / (float)(N - 1);
             }
         }
     }
@@ -492,7 +559,18 @@ internal static class Program
         GL.glGenBuffers(1, ref ebo);
         GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, ebo);
         UploadU(GL.GL_ELEMENT_ARRAY_BUFFER, MeshI);
-        SetPosNormalAttribs();
+        SetClothAttribs();
+    }
+
+    private static void SetClothAttribs()
+    {
+        int stride = 8 * sizeof(float);
+        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, 0, stride, 0);
+        GL.glEnableVertexAttribArray(0);
+        GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, 0, stride, 3 * sizeof(float));
+        GL.glEnableVertexAttribArray(1);
+        GL.glVertexAttribPointer(2, 2, GL.GL_FLOAT, 0, stride, 6 * sizeof(float));
+        GL.glEnableVertexAttribArray(2);
     }
 
     private static void MakeStaticVao(float[] verts, uint[] indices, out uint vao)
@@ -578,25 +656,81 @@ internal static class Program
         return vao;
     }
 
+    // Procedural plain-weave fabric texture: alternating warp/weft threads, each
+    // raised thread caught by a soft highlight, with a little per-thread noise.
+    private static uint MakeFabricTexture(int s)
+    {
+        var px = new byte[s * s * 3];
+        const int threads = 8; // threads per tile
+
+        static float Hash(int x, int y)
+        {
+            int h = x * 374761393 + y * 668265263;
+            h = (h ^ (h >> 13)) * 1274126177;
+            return ((h ^ (h >> 16)) & 0xFFFF) / 65535f;
+        }
+        static byte B(float f) => (byte)Math.Clamp((int)(f * 255f), 0, 255);
+
+        for (int y = 0; y < s; y++)
+            for (int x = 0; x < s; x++)
+            {
+                float fx = x / (float)s * threads;
+                float fy = y / (float)s * threads;
+                int cx = (int)MathF.Floor(fx), cy = (int)MathF.Floor(fy);
+                float tx = fx - cx, ty = fy - cy;
+                bool over = ((cx + cy) & 1) == 0;                 // plain weave
+                float shade = over ? MathF.Sin(ty * MathF.PI) : MathF.Sin(tx * MathF.PI);
+                shade = 0.45f + 0.55f * shade;
+                float n = Hash(cx, cy) * 0.08f - 0.04f;           // thread-to-thread variation
+                int o = (y * s + x) * 3;
+                px[o]     = B(shade * 0.96f + n);
+                px[o + 1] = B(shade * 0.93f + n);
+                px[o + 2] = B(shade * 0.90f + n);
+            }
+
+        uint tex = 0;
+        GL.glGenTextures(1, ref tex);
+        GL.glActiveTexture(GL.GL_TEXTURE0);
+        GL.glBindTexture(GL.GL_TEXTURE_2D, tex);
+        GCHandle h = GCHandle.Alloc(px, GCHandleType.Pinned);
+        try
+        {
+            GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, (int)GL.GL_RGB8, s, s, 0,
+                            GL.GL_RGB, GL.GL_UNSIGNED_BYTE, h.AddrOfPinnedObject());
+        }
+        finally { h.Free(); }
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, (int)GL.GL_REPEAT);
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, (int)GL.GL_REPEAT);
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, (int)GL.GL_LINEAR);
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, (int)GL.GL_LINEAR_MIPMAP_LINEAR);
+        GL.glGenerateMipmap(GL.GL_TEXTURE_2D);
+        return tex;
+    }
+
     private const string LitVS = @"#version 330 core
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNormal;
+layout(location=2) in vec2 aUV;
 uniform mat4 uMVP;
 out vec3 vN;
 out vec3 vW;
+out vec2 vUV;
 void main(){
     vW = aPos;
     vN = aNormal;
+    vUV = aUV;
     gl_Position = uMVP * vec4(aPos, 1.0);
 }";
 
     private const string LitFS = @"#version 330 core
 in vec3 vN;
 in vec3 vW;
+in vec2 vUV;
 uniform vec3 uCam;
 uniform vec3 uLight;
 uniform vec3 uFront;
 uniform vec3 uBack;
+uniform sampler2D uTex;
 out vec4 FragColor;
 void main(){
     vec3 N = normalize(vN);
@@ -605,7 +739,8 @@ void main(){
     if (!front) N = -N;                // light the side we actually see
     vec3 L = normalize(uLight);
     float diff = max(dot(N, L), 0.0);
-    vec3 base = front ? uFront : uBack;
+    vec3 weave = texture(uTex, vUV * 6.0).rgb;
+    vec3 base = (front ? uFront : uBack) * weave * 1.25;
     vec3 col = base * (0.25 + 0.75 * diff);
     vec3 H = normalize(L + V);
     col += vec3(1.0) * pow(max(dot(N, H), 0.0), 40.0) * 0.25;

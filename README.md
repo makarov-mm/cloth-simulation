@@ -21,6 +21,8 @@ This is intentionally a small, low-dependency graphics/physics demo: there are n
 - Orbit camera and zoom controls.
 - Dynamic normal generation for lighting.
 - Two-sided cloth shading with different front/back colors.
+- Particle self-collision via a uniform spatial hash, so folds don't pass through the sheet.
+- UV coordinates and a procedurally generated woven fabric texture (plain weave) with mipmapping.
 - Minimal OpenGL 3.3 rendering pipeline with runtime shader compilation.
 - Raw Win32/WGL window and OpenGL context setup through P/Invoke.
 
