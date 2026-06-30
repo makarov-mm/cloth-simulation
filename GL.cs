@@ -33,6 +33,18 @@ internal static class GL
     public const uint GL_LINEAR_MIPMAP_LINEAR = 0x2703;
     public const uint GL_REPEAT = 0x2901;
 
+    // Blending (used for the soft projected floor shadow)
+    public const uint GL_BLEND = 0x0BE2;
+    public const uint GL_SRC_ALPHA = 0x0302;
+    public const uint GL_ONE_MINUS_SRC_ALPHA = 0x0303;
+
+    // Compute / SSBO (OpenGL 4.3+)
+    public const uint GL_COMPUTE_SHADER = 0x91B9;
+    public const uint GL_SHADER_STORAGE_BUFFER = 0x90D2;
+    public const uint GL_SHADER_STORAGE_BARRIER_BIT = 0x00002000;
+    public const uint GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT = 0x00000001;
+    public const uint GL_BUFFER_UPDATE_BARRIER_BIT = 0x00000200;
+
     [DllImport("opengl32.dll")] public static extern void glClear(uint mask);
     [DllImport("opengl32.dll")] public static extern void glClearColor(float r, float g, float b, float a);
     [DllImport("opengl32.dll")] public static extern void glViewport(int x, int y, int w, int h);
@@ -44,6 +56,8 @@ internal static class GL
     [DllImport("opengl32.dll")] public static extern void glBindTexture(uint target, uint tex);
     [DllImport("opengl32.dll")] public static extern void glTexParameteri(uint target, uint pname, int param);
     [DllImport("opengl32.dll")] public static extern void glTexImage2D(uint target, int level, int internalFormat, int width, int height, int border, uint format, uint type, IntPtr pixels);
+    [DllImport("opengl32.dll")] public static extern void glBlendFunc(uint sfactor, uint dfactor);
+    [DllImport("opengl32.dll")] public static extern void glDepthMask(byte flag);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate uint GlCreateShaderD(uint type);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlShaderSourceD(uint s, int c, IntPtr[] str, IntPtr len);
@@ -72,6 +86,10 @@ internal static class GL
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlGenerateMipmapD(uint target);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate int WglSwapIntervalEXTD(int interval);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate IntPtr WglCreateContextAttribsARB(IntPtr hdc, IntPtr share, int[] attribs);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlDispatchComputeD(uint x, uint y, uint z);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlMemoryBarrierD(uint barriers);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlBindBufferBaseD(uint target, uint index, uint buffer);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlUniform1fD(int loc, float v);
 
     public static GlCreateShaderD glCreateShader;
     public static GlShaderSourceD glShaderSource;
@@ -100,6 +118,10 @@ internal static class GL
     public static GlUniform1iD glUniform1i;
     public static GlGenerateMipmapD glGenerateMipmap;
     public static WglSwapIntervalEXTD wglSwapIntervalEXT;
+    public static GlDispatchComputeD glDispatchCompute;
+    public static GlMemoryBarrierD glMemoryBarrier;
+    public static GlBindBufferBaseD glBindBufferBase;
+    public static GlUniform1fD glUniform1f;
 
     static T Get<T>(string name) where T : Delegate
     {
@@ -142,6 +164,10 @@ internal static class GL
         glActiveTexture = Get<GlActiveTextureD>("glActiveTexture");
         glUniform1i = Get<GlUniform1iD>("glUniform1i");
         glGenerateMipmap = Get<GlGenerateMipmapD>("glGenerateMipmap");
+        glDispatchCompute = Get<GlDispatchComputeD>("glDispatchCompute");
+        glMemoryBarrier = Get<GlMemoryBarrierD>("glMemoryBarrier");
+        glBindBufferBase = Get<GlBindBufferBaseD>("glBindBufferBase");
+        glUniform1f = Get<GlUniform1fD>("glUniform1f");
 
         IntPtr swap = Win.wglGetProcAddress("wglSwapIntervalEXT");
 

@@ -11,6 +11,7 @@ public static class Win
     public const int IDC_ARROW = 32512;
     public const uint PM_REMOVE = 0x0001;
     public const uint WM_DESTROY = 0x0002, WM_SIZE = 0x0005, WM_QUIT = 0x0012;
+    public const uint WM_KEYDOWN = 0x0100;
     public const uint WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202, WM_MOUSEWHEEL = 0x020A;
     public const uint WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205;
 
