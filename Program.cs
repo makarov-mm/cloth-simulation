@@ -53,10 +53,39 @@ internal static class Program
 
     // XPBD compliance (inverse stiffness, world-unit^2 / force). 0 = perfectly
     // rigid. Higher = softer. Because XPBD divides compliance by dt^2, stiffness
-    // is now a material property, independent of how many solver iterations run.
-    const float StructCompliance = 0.0f;    // stretch: rigid, the sheet shouldn't grow
-    const float ShearCompliance = 2e-5f;    // in-plane shear: nearly rigid
-    const float BendCompliance = 6e-4f;     // bending: soft, so folds form readily
+    // is a *material property*, independent of how many solver iterations run —
+    // which is what makes runtime material presets possible: switching material
+    // just swaps three compliance numbers, no constraint rebuild, no re-tuning
+    // of the iteration count. Cycle with M.
+    internal struct Material
+    {
+        public string Name;
+        public float Struct;  // stretch compliance (0 = inextensible)
+        public float Shear;   // in-plane shear compliance
+        public float Bend;    // bending compliance (higher = silkier folds)
+    }
+
+    internal static readonly Material[] Materials =
+    [
+        new() { Name = "Cotton", Struct = 0f,    Shear = 2e-5f, Bend = 6e-4f }, // the original tuning
+        new() { Name = "Silk",   Struct = 0f,    Shear = 6e-5f, Bend = 6e-3f }, // drapes into fine folds
+        new() { Name = "Canvas", Struct = 0f,    Shear = 4e-6f, Bend = 8e-6f }, // stiff, holds its shape
+        new() { Name = "Rubber", Struct = 4e-4f, Shear = 2e-4f, Bend = 2e-3f }, // visibly stretchy
+    ];
+    static int _matIdx;
+    static Material Mat => Materials[_matIdx];
+
+    // Aerodynamic wind coupling (toggle with A, on by default). Instead of
+    // pushing every particle with the wind field directly, treat the field as an
+    // air *velocity* and apply a normal-pressure force per particle:
+    //     a = Aero * (n . v_rel) * |n . v_rel| * n,   v_rel = v_wind - v_particle
+    // The force vanishes when the sheet turns edge-on to the flow and reverses
+    // with the facing side, which is what produces the sharp, snapping flutter
+    // of a real flag. Because v_rel includes the particle's own velocity, the
+    // same term acts as air drag: a released sheet falls slower and tumbles even
+    // with the wind switched off.
+    const float AeroCoeff = 0.14f;    // pressure coefficient (per unit mass)
+    const float AeroMaxRel = 30f;     // clamp |v_rel| so a mouse yank can't explode it
 
     // Curl-noise wind. The flow is the curl of a noise vector potential, so it is
     // divergence-free (swirls, no sources/sinks). WindDir is the steady breeze;
@@ -71,9 +100,14 @@ internal static class Program
     static Vector3[] Pos, Prev, PinPos;
     static bool[] Pinned;
 
-    struct Con { public int A, B; public float Rest; public float Compliance; }
+    // Constraints carry a *type*; the compliance is looked up from the active
+    // material at solve time, so switching materials is free.
+    const byte TStruct = 0, TShear = 1, TBend = 2;
+    struct Con { public int A, B; public float Rest; public byte Type; }
     static readonly List<Con> Cons = new();
     static float[] Lambda; // per-constraint Lagrange multiplier, reset every substep
+
+    static Vector3[] AeroN; // per-particle surface normals for the aero force
 
     static float[] MeshV; // pos(3) + normal(3) + uv(2) per particle
     static uint[] MeshI; // triangle indices
@@ -102,6 +136,10 @@ internal static class Program
     static bool _windOn = true;
     static float _windScale = 1f; // live wind multiplier (Up/Down arrows)
     static bool _gpu; // G: switch to the GPU high-resolution path
+    static bool _aero = true;  // A: aerodynamic (normal-pressure) wind coupling
+    static bool _vsync = true; // V: vsync toggle (for uncapped frame-rate tests)
+    static bool _shot;         // P: capture a PNG screenshot after the next present
+    static string _shotName;   // last saved screenshot (shown in the title HUD)
     static int _lastX, _lastY, _mx, _my;
     static int _grabIndex = -1;
     static bool _grabWasPinned;
@@ -130,7 +168,7 @@ internal static class Program
             throw new Exception("RegisterClassEx failed: " + Marshal.GetLastWin32Error());
 
         IntPtr hwnd = Win.CreateWindowExW(
-            0, cls, "Cloth — GPU XPBD (compute) — C#/OpenGL  (G GPU/CPU · F flag · 1-4 corners · W wind · Up/Down strength · LMB drag · RMB rotate · wheel zoom · SPACE drop on sphere · C drop on floor · R reset · T tear)",
+            0, cls, "Cloth — XPBD — C#/OpenGL",
             Win.WS_OVERLAPPEDWINDOW | Win.WS_VISIBLE,
             Win.CW_USEDEFAULT, Win.CW_USEDEFAULT, _w, _h,
             IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
@@ -227,6 +265,12 @@ internal static class Program
 
         var clock = Stopwatch.StartNew();
 
+        // Title-bar HUD: FPS + current mode, refreshed twice a second. A text
+        // overlay would need a font path; the title bar is the zero-dependency HUD.
+        int frames = 0;
+        double hudLast = 0;
+        bool vsyncApplied = _vsync;
+
         while (_running)
         {
             while (Win.PeekMessageW(out var msg, IntPtr.Zero, 0, 0, Win.PM_REMOVE))
@@ -237,7 +281,28 @@ internal static class Program
             }
             if (!_running) break;
 
+            if (vsyncApplied != _vsync && GL.wglSwapIntervalEXT != null)
+            {
+                GL.wglSwapIntervalEXT(_vsync ? 1 : 0);
+                vsyncApplied = _vsync;
+            }
+
             float t = (float)clock.Elapsed.TotalSeconds;
+
+            frames++;
+            double now = clock.Elapsed.TotalSeconds;
+            if (now - hudLast >= 0.5)
+            {
+                double fps = frames / (now - hudLast);
+                frames = 0; hudLast = now;
+                string path = _gpu
+                    ? $"GPU 320\u00b2 ({GpuCloth.ParticleCount:n0} particles, {GpuCloth.ConstraintCount:n0} constraints)"
+                    : $"CPU 64\u00b2 ({N * N:n0} particles, {Cons.Count:n0} constraints)";
+                string shot = _shotName != null ? $" \u00b7 saved {_shotName}" : "";
+                Win.SetWindowTextW(hwnd,
+                    $"Cloth \u2014 XPBD \u2014 {path} \u00b7 {Mat.Name} \u00b7 wind {(_windOn ? $"{_windScale * 100f:0}%" : "off")}" +
+                    $" \u00b7 aero {(_aero ? "on" : "off")} \u00b7 {fps:0} FPS{(_vsync ? " (vsync)" : "")}{shot}");
+            }
 
             // camera
             var eye = Target + new Vector3(
@@ -247,7 +312,7 @@ internal static class Program
             float aspect = (float)_w / _h;
             float[] mvp = Mul(Perspective(0.85f, aspect, 0.05f, 60f), LookAt(eye, Target, Vector3.UnitY));
 
-            HandleGrab(mvp);
+            if (!_gpu) HandleGrab(mvp); // GPU-path positions live in VRAM; grabbing is CPU-only
 
             if (!_gpu)
             {
@@ -269,7 +334,8 @@ internal static class Program
 
             if (_gpu)
             {
-                GpuCloth.Step(t, _windScale, _windOn ? 1 : 0);
+                GpuCloth.Step(t, _windScale, _windOn ? 1 : 0, _aero ? 1 : 0,
+                              Mat.Struct, Mat.Shear, Mat.Bend);
                 GL.glEnable(GL.GL_DEPTH_TEST);
                 DrawFloor(mvp, eye);
                 GL.glUseProgram(litProg);
@@ -282,6 +348,7 @@ internal static class Program
                 GL.glUniform3f(uFront, 0.85f, 0.12f, 0.22f);
                 GL.glUniform3f(uBack, 0.20f, 0.10f, 0.35f);
                 GpuCloth.Draw();
+                CaptureIfRequested();
                 Win.SwapBuffers(hdc);
                 continue;
             }
@@ -315,6 +382,7 @@ internal static class Program
                 GL.glDrawElements(GL.GL_TRIANGLES, SphICount, GL.GL_UNSIGNED_INT, IntPtr.Zero);
             }
 
+            CaptureIfRequested();
             Win.SwapBuffers(hdc);
         }
 
@@ -382,6 +450,10 @@ internal static class Program
                     else if (vk == 0x46) FlagMode();           // F: pin left edge (flag)
                     else if (vk == 0x57) _windOn = !_windOn;   // W: toggle wind
                     else if (vk == 0x47) _gpu = !_gpu;          // G: CPU <-> GPU path
+                    else if (vk == 0x4D) _matIdx = (_matIdx + 1) % Materials.Length; // M: cycle material
+                    else if (vk == 0x41) _aero = !_aero;        // A: aerodynamic wind coupling
+                    else if (vk == 0x50) _shot = true;          // P: save a PNG screenshot
+                    else if (vk == 0x56) _vsync = !_vsync;      // V: vsync on/off
                     else if (vk == 0x31) ToggleCornerPin(0, 0);          // 1: top-left
                     else if (vk == 0x32) ToggleCornerPin(N - 1, 0);      // 2: top-right
                     else if (vk == 0x33) ToggleCornerPin(0, N - 1);      // 3: bottom-left
@@ -409,7 +481,7 @@ internal static class Program
         int n = N * N;
         Pos = new Vector3[n]; Prev = new Vector3[n]; PinPos = new Vector3[n]; Pinned = new bool[n];
 
-        float top = 1.0f, frontZ = 0.7f, cell = W / (N - 1);
+        float top = 1.0f, frontZ = 0.7f;
         for (int j = 0; j < N; j++)
             for (int i = 0; i < N; i++)
             {
@@ -428,7 +500,7 @@ internal static class Program
         for (int e = 0; e < _vAlive.Length; e++) _vAlive[e] = true;
         _topoDirty = true;
 
-        void Add(int ai, int aj, int bi, int bj, float compliance)
+        void Add(int ai, int aj, int bi, int bj, byte type)
         {
             // Both endpoints must be in range. Checking only b let the shear '/'
             // case Add(i+1, j, i, j+1) slip through at i == N-1, where a = (N, j)
@@ -437,21 +509,22 @@ internal static class Program
             if (ai < 0 || ai >= N || aj < 0 || aj >= N) return;
             if (bi < 0 || bi >= N || bj < 0 || bj >= N) return;
             int a = Idx(ai, aj), b = Idx(bi, bj);
-            Cons.Add(new Con { A = a, B = b, Rest = Vector3.Distance(Pos[a], Pos[b]), Compliance = compliance });
+            Cons.Add(new Con { A = a, B = b, Rest = Vector3.Distance(Pos[a], Pos[b]), Type = type });
         }
 
         for (int j = 0; j < N; j++)
             for (int i = 0; i < N; i++)
             {
-                Add(i, j, i + 1, j, StructCompliance);     // structural
-                Add(i, j, i, j + 1, StructCompliance);
-                Add(i, j, i + 1, j + 1, ShearCompliance);  // shear
-                Add(i + 1, j, i, j + 1, ShearCompliance);
-                Add(i, j, i + 2, j, BendCompliance);       // bend
-                Add(i, j, i, j + 2, BendCompliance);
+                Add(i, j, i + 1, j, TStruct);     // structural
+                Add(i, j, i, j + 1, TStruct);
+                Add(i, j, i + 1, j + 1, TShear);  // shear
+                Add(i + 1, j, i, j + 1, TShear);
+                Add(i, j, i + 2, j, TBend);       // bend
+                Add(i, j, i, j + 2, TBend);
             }
 
         Lambda = new float[Cons.Count];
+        AeroN = new Vector3[n];
     }
 
     private static void Pin(int i, int j)
@@ -475,11 +548,35 @@ internal static class Program
     {
         var grav = new Vector3(0f, -Gravity, 0f);
 
-        // Verlet integration with a divergence-free curl-noise wind field
+        if (_aero) ComputeAeroNormals();
+
+        // Verlet integration with a divergence-free curl-noise wind field.
+        // Two coupling modes:
+        //   direct (_aero off): the field is applied as an acceleration, the
+        //     original behavior — cheap, but the force ignores how the sheet
+        //     faces the flow;
+        //   aerodynamic (_aero on): the field is an air velocity, and the sheet
+        //     feels a quadratic normal-pressure force from the *relative* flow.
+        //     Edge-on cloth feels nothing, so a flag snaps and flutters instead
+        //     of being pushed uniformly; the -v term doubles as air drag.
         for (int k = 0; k < Pos.Length; k++)
         {
             if (Pinned[k]) continue;
-            Vector3 acc = grav + WindField(Pos[k], t);
+            Vector3 acc = grav;
+
+            if (_aero)
+            {
+                Vector3 vrel = WindField(Pos[k], t) - (Pos[k] - Prev[k]) / Dt;
+                float vr2 = vrel.LengthSquared();
+                if (vr2 > AeroMaxRel * AeroMaxRel) vrel *= AeroMaxRel / MathF.Sqrt(vr2);
+                float f = Vector3.Dot(AeroN[k], vrel);
+                acc += AeroN[k] * (AeroCoeff * f * MathF.Abs(f));
+            }
+            else
+            {
+                acc += WindField(Pos[k], t);
+            }
+
             Vector3 cur = Pos[k];
             Pos[k] = cur + (cur - Prev[k]) * Damp + acc * (Dt * Dt);
             Prev[k] = cur;
@@ -493,6 +590,7 @@ internal static class Program
         // iteration-count-independent material response.
         float dt2 = Dt * Dt;
         Array.Clear(Lambda, 0, Cons.Count);
+        var mat = Mat; // constraint stiffness comes from the active material preset
 
         for (int it = 0; it < Iters; it++)
         {
@@ -511,7 +609,9 @@ internal static class Program
                 Vector3 n = d / len;
                 float C = len - con.Rest;
 
-                float alphaTilde = con.Compliance / dt2;
+                float compliance = con.Type == TStruct ? mat.Struct
+                                 : con.Type == TShear ? mat.Shear : mat.Bend;
+                float alphaTilde = compliance / dt2;
                 float dLambda = (-C - alphaTilde * Lambda[c]) / (wsum + alphaTilde);
                 Lambda[c] += dLambda;
 
@@ -674,6 +774,47 @@ internal static class Program
             Vector3 vt = new(v.X, 0f, v.Z);         // horizontal (tangential) part
             Prev[k] += vt * FloorFriction;          // keep (1-FloorFriction) of the slide
         }
+    }
+
+    // Per-particle surface normals for the aerodynamic force, from central
+    // differences over grid neighbors — the same estimate the render mesh uses,
+    // but computed per substep so the force always sees the current shape.
+    private static void ComputeAeroNormals()
+    {
+        for (int j = 0; j < N; j++)
+            for (int i = 0; i < N; i++)
+            {
+                int il = Math.Max(i - 1, 0), ir = Math.Min(i + 1, N - 1);
+                int jl = Math.Max(j - 1, 0), jr = Math.Min(j + 1, N - 1);
+                Vector3 dx = Pos[Idx(ir, j)] - Pos[Idx(il, j)];
+                Vector3 dy = Pos[Idx(i, jr)] - Pos[Idx(i, jl)];
+                Vector3 nrm = Vector3.Cross(dy, dx);
+                float l = nrm.Length();
+                AeroN[Idx(i, j)] = l > 1e-6f ? nrm / l : Vector3.UnitZ;
+            }
+    }
+
+    // P was pressed: read the back buffer (the frame just rendered, before the
+    // swap) and save it as a PNG next to the executable. Fully dependency-free —
+    // see Png.cs.
+    private static void CaptureIfRequested()
+    {
+        if (!_shot) return;
+        _shot = false;
+
+        var px = new byte[_w * _h * 3];
+        GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1); // rows are tightly packed
+        GCHandle h = GCHandle.Alloc(px, GCHandleType.Pinned);
+        try { GL.glReadPixels(0, 0, _w, _h, GL.GL_RGB, GL.GL_UNSIGNED_BYTE, h.AddrOfPinnedObject()); }
+        finally { h.Free(); }
+
+        string name = $"screenshot_{DateTime.Now:yyyyMMdd_HHmmss}.png";
+        try
+        {
+            Png.WriteRgbBottomUp(System.IO.Path.Combine(AppContext.BaseDirectory, name), px, _w, _h);
+            _shotName = name; // surfaced in the title-bar HUD
+        }
+        catch (System.IO.IOException) { /* demo-grade: a failed save is not fatal */ }
     }
 
     // ---- Curl-noise wind ---------------------------------------------------

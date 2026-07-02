@@ -88,6 +88,7 @@ public static class Win
     [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr hWnd, IntPtr hdc);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT rc);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool SetWindowTextW(IntPtr hWnd, string text);
     [DllImport("user32.dll")] public static extern bool PeekMessageW(out MSG msg, IntPtr hWnd, uint min, uint max, uint remove);
     [DllImport("user32.dll")] public static extern bool TranslateMessage(ref MSG msg);
     [DllImport("user32.dll")] public static extern IntPtr DispatchMessageW(ref MSG msg);

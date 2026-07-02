@@ -38,6 +38,9 @@ internal static class GL
     public const uint GL_SRC_ALPHA = 0x0302;
     public const uint GL_ONE_MINUS_SRC_ALPHA = 0x0303;
 
+    // Framebuffer readback (used for PNG screenshots)
+    public const uint GL_PACK_ALIGNMENT = 0x0D05;
+
     // Compute / SSBO (OpenGL 4.3+)
     public const uint GL_COMPUTE_SHADER = 0x91B9;
     public const uint GL_SHADER_STORAGE_BUFFER = 0x90D2;
@@ -58,6 +61,8 @@ internal static class GL
     [DllImport("opengl32.dll")] public static extern void glTexImage2D(uint target, int level, int internalFormat, int width, int height, int border, uint format, uint type, IntPtr pixels);
     [DllImport("opengl32.dll")] public static extern void glBlendFunc(uint sfactor, uint dfactor);
     [DllImport("opengl32.dll")] public static extern void glDepthMask(byte flag);
+    [DllImport("opengl32.dll")] public static extern void glReadPixels(int x, int y, int w, int h, uint format, uint type, IntPtr pixels);
+    [DllImport("opengl32.dll")] public static extern void glPixelStorei(uint pname, int param);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate uint GlCreateShaderD(uint type);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] public delegate void GlShaderSourceD(uint s, int c, IntPtr[] str, IntPtr len);

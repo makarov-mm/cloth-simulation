@@ -3,11 +3,17 @@
 // constraint solve, and the render-mesh (positions + normals) all run in
 // compute, and the draw call pulls vertices straight from the same buffer.
 //
-//   * 320 x 320 = 102,400 particles, ~407k distance constraints.
-//   * Structural + shear constraints, partitioned into 8 conflict-free colors
-//     (no two constraints in a color share a particle), so each color is one
-//     race-free dispatch — no atomics needed.
-//   * Curl-noise wind ported to GLSL, identical in spirit to the CPU path.
+//   * 320 x 320 = 102,400 particles, ~610k distance constraints.
+//   * Structural + shear + bend constraints, partitioned into 12 conflict-free
+//     colors (no two constraints in a color share a particle), so each color is
+//     one race-free dispatch — no atomics needed.
+//   * Constraint *type* lives in the buffer; the compliance for each type is a
+//     per-dispatch uniform, so switching material presets (M) costs nothing —
+//     no buffer re-upload, exactly the XPBD promise.
+//   * Curl-noise wind ported to GLSL, with the same optional aerodynamic
+//     (normal-pressure) coupling as the CPU path; the surface normals come for
+//     free from the previous frame's render-mesh build pass.
+//   * Ground-plane collision with tangential friction, as on the CPU path.
 //
 // This mode deliberately omits self-collision, tearing and the sphere: those
 // need atomic spatial hashing / dynamic topology and are their own GPU project.
@@ -32,22 +38,31 @@ internal static class GpuCloth
     const float Gravity = 9.8f;
     const float Damp = 0.99f;
 
-    // Compliance (inverse stiffness). dt is small here, so alphaTilde = a/dt^2.
-    const float StructCompliance = 0.0f;
-    const float ShearCompliance = 2e-5f;
+    // Ground plane — same plane the CPU path uses, so both scenes share a floor.
+    const float FloorY = -1.6f;
+    const float FloorEps = 0.01f;
+    const float FloorFriction = 0.3f;
 
-    const int Local = 256; // compute local_size_x
+    // Aerodynamic coupling, mirroring Program.cs (see the comment there).
+    const float AeroCoeff = 0.14f;
+    const float AeroMaxRel = 30f;
+
+    const int Local = 256;  // compute local_size_x
+    const int Colors = 12;  // 4 structural + 4 shear + 4 bend
 
     static int M;          // particle count
     static int ConCount;   // total constraints
     static int IdxCount;   // render index count
 
-    static uint _posBuf, _prevBuf, _lamBuf, _conBuf, _vtxBuf, _ebo, _vao;
-    static uint _predict, _clear, _solve, _build;
+    public static int ParticleCount => M;        // for the title-bar HUD
+    public static int ConstraintCount => ConCount;
 
-    // colour ranges into _conBuf (offset,count), 8 colours
-    static readonly int[] _colOff = new int[8];
-    static readonly int[] _colCnt = new int[8];
+    static uint _posBuf, _prevBuf, _lamBuf, _conBuf, _vtxBuf, _ebo, _vao;
+    static uint _predict, _clear, _solve, _floor, _build;
+
+    // colour ranges into _conBuf (offset,count)
+    static readonly int[] _colOff = new int[Colors];
+    static readonly int[] _colCnt = new int[Colors];
 
     static int Idx(int i, int j) => j * GN + i;
 
@@ -58,7 +73,7 @@ internal static class GpuCloth
         // --- particles -----------------------------------------------------
         var pos = new float[M * 4];
         var prev = new float[M * 4];
-        float top = Width * 0.5f, spacing = Width / (GN - 1);
+        float top = Width * 0.5f;
         for (int j = 0; j < GN; j++)
             for (int i = 0; i < GN; i++)
             {
@@ -71,45 +86,57 @@ internal static class GpuCloth
             }
 
         // --- constraints, grouped by colour --------------------------------
-        // colours 0,1: horizontal structural by i&1
-        // colours 2,3: vertical   structural by j&1
-        // colours 4,5: '\' shear by i&1
-        // colours 6,7: '/' shear by i&1
-        var buckets = new List<(int a, int b, float rest, float comp)>[8];
-        for (int c = 0; c < 8; c++) buckets[c] = new List<(int, int, float, float)>();
+        // Analytic graph coloring on the grid — no two constraints in a colour
+        // share a particle, so each colour is one race-free dispatch:
+        //   colours 0,1:   horizontal structural, by i&1
+        //   colours 2,3:   vertical   structural, by j&1
+        //   colours 4,5:   '\' shear, by i&1
+        //   colours 6,7:   '/' shear, by i&1
+        //   colours 8,9:   horizontal bend (i,j)-(i+2,j), by (i>>1)&1
+        //   colours 10,11: vertical   bend (i,j)-(i,j+2), by (j>>1)&1
+        // Bend colouring: two H-bend constraints conflict only when their start
+        // columns differ by exactly 2 (they share the middle/end particle), and
+        // (i>>1)&1 flips every 2 columns, so conflicting pairs always land in
+        // different colours. Constraints 4+ columns apart share nothing.
+        var buckets = new List<(int a, int b, float rest)>[Colors];
+        for (int c = 0; c < Colors; c++) buckets[c] = new List<(int, int, float)>();
 
         Vector3 P(int i, int j) => new(pos[Idx(i, j) * 4], pos[Idx(i, j) * 4 + 1], pos[Idx(i, j) * 4 + 2]);
-        void AddCon(int colour, int i0, int j0, int i1, int j1, float comp)
+        void AddCon(int colour, int i0, int j0, int i1, int j1)
         {
             int a = Idx(i0, j0), b = Idx(i1, j1);
-            buckets[colour].Add((a, b, Vector3.Distance(P(i0, j0), P(i1, j1)), comp));
+            buckets[colour].Add((a, b, Vector3.Distance(P(i0, j0), P(i1, j1))));
         }
 
         for (int j = 0; j < GN; j++)
             for (int i = 0; i < GN; i++)
             {
-                if (i + 1 < GN) AddCon(i & 1, i, j, i + 1, j, StructCompliance);          // H structural
-                if (j + 1 < GN) AddCon(2 + (j & 1), i, j, i, j + 1, StructCompliance);    // V structural
-                if (i + 1 < GN && j + 1 < GN) AddCon(4 + (i & 1), i, j, i + 1, j + 1, ShearCompliance); // '\'
-                if (i + 1 < GN && j + 1 < GN) AddCon(6 + (i & 1), i + 1, j, i, j + 1, ShearCompliance); // '/'
+                if (i + 1 < GN) AddCon(i & 1, i, j, i + 1, j);          // H structural
+                if (j + 1 < GN) AddCon(2 + (j & 1), i, j, i, j + 1);    // V structural
+                if (i + 1 < GN && j + 1 < GN) AddCon(4 + (i & 1), i, j, i + 1, j + 1); // '\'
+                if (i + 1 < GN && j + 1 < GN) AddCon(6 + (i & 1), i + 1, j, i, j + 1); // '/'
+                if (i + 2 < GN) AddCon(8 + ((i >> 1) & 1), i, j, i + 2, j);   // H bend
+                if (j + 2 < GN) AddCon(10 + ((j >> 1) & 1), i, j, i, j + 2);  // V bend
             }
 
         ConCount = 0;
-        for (int c = 0; c < 8; c++) ConCount += buckets[c].Count;
+        for (int c = 0; c < Colors; c++) ConCount += buckets[c].Count;
 
-        // flatten into one int[] (a,b,restBits,compBits) ordered by colour
+        // flatten into one int[] (a, b, restBits, pad) ordered by colour. The
+        // compliance is *not* baked in: it arrives as a per-dispatch uniform
+        // chosen from the active material, so material switches are free.
         var conData = new int[ConCount * 4];
         int w = 0;
-        for (int c = 0; c < 8; c++)
+        for (int c = 0; c < Colors; c++)
         {
             _colOff[c] = w / 4;
             _colCnt[c] = buckets[c].Count;
-            foreach (var (a, b, rest, comp) in buckets[c])
+            foreach (var (a, b, rest) in buckets[c])
             {
                 conData[w++] = a;
                 conData[w++] = b;
                 conData[w++] = BitConverter.SingleToInt32Bits(rest);
-                conData[w++] = BitConverter.SingleToInt32Bits(comp);
+                conData[w++] = 0;
             }
         }
 
@@ -148,12 +175,14 @@ internal static class GpuCloth
         _predict = BuildCompute(PredictCS);
         _clear = BuildCompute(ClearCS);
         _solve = BuildCompute(SolveCS);
+        _floor = BuildCompute(FloorCS);
         _build = BuildCompute(BuildCS);
     }
 
     static uint Groups(int n) => (uint)((n + Local - 1) / Local);
 
-    public static void Step(float time, float windScale, int windOn)
+    public static void Step(float time, float windScale, int windOn, int aeroOn,
+                            float structComp, float shearComp, float bendComp)
     {
         GL.glBindBufferBase(GL.GL_SHADER_STORAGE_BUFFER, 0, _posBuf);
         GL.glBindBufferBase(GL.GL_SHADER_STORAGE_BUFFER, 1, _prevBuf);
@@ -161,11 +190,16 @@ internal static class GpuCloth
         GL.glBindBufferBase(GL.GL_SHADER_STORAGE_BUFFER, 3, _conBuf);
         GL.glBindBufferBase(GL.GL_SHADER_STORAGE_BUFFER, 4, _vtxBuf);
 
+        // colour -> compliance for the active material: 0-3 structural,
+        // 4-7 shear, 8-11 bend (see the colouring table in Init).
+        float CompForColor(int c) => c < 4 ? structComp : c < 8 ? shearComp : bendComp;
+
         for (int s = 0; s < SubSteps; s++)
         {
             // predict
             GL.glUseProgram(_predict);
             Set1i(_predict, "uCount", M);
+            Set1i(_predict, "uGN", GN);
             Set1f(_predict, "uDt", Dt);
             Set1f(_predict, "uTime", time);
             Set1f(_predict, "uDamp", Damp);
@@ -177,6 +211,9 @@ internal static class GpuCloth
             Set1f(_predict, "uScrollSpeed", 0.6f);
             Set1f(_predict, "uWindScale", windScale);
             Set1i(_predict, "uWindOn", windOn);
+            Set1i(_predict, "uAero", aeroOn);
+            Set1f(_predict, "uAeroCoeff", AeroCoeff);
+            Set1f(_predict, "uAeroMaxRel", AeroMaxRel);
             GL.glDispatchCompute(Groups(M), 1, 1);
             GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT);
 
@@ -190,14 +227,23 @@ internal static class GpuCloth
             GL.glUseProgram(_solve);
             Set1f(_solve, "uDt", Dt);
             for (int it = 0; it < Iters; it++)
-                for (int c = 0; c < 8; c++)
+                for (int c = 0; c < Colors; c++)
                 {
                     if (_colCnt[c] == 0) continue;
                     Set1i(_solve, "uOffset", _colOff[c]);
                     Set1i(_solve, "uColorCount", _colCnt[c]);
+                    Set1f(_solve, "uCompliance", CompForColor(c));
                     GL.glDispatchCompute(Groups(_colCnt[c]), 1, 1);
                     GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT);
                 }
+
+            // ground plane: project out + tangential friction (same as CPU path)
+            GL.glUseProgram(_floor);
+            Set1i(_floor, "uCount", M);
+            Set1f(_floor, "uFloorY", FloorY + FloorEps);
+            Set1f(_floor, "uFriction", FloorFriction);
+            GL.glDispatchCompute(Groups(M), 1, 1);
+            GL.glMemoryBarrier(GL.GL_SHADER_STORAGE_BARRIER_BIT);
         }
 
         // rebuild render mesh (positions + normals) from the solved positions
@@ -332,9 +378,10 @@ vec3 curl(vec3 p){
 layout(local_size_x=256) in;
 layout(std430,binding=0) buffer Pos  { vec4 pos[];  };
 layout(std430,binding=1) buffer Prev { vec4 prev[]; };
-uniform int uCount; uniform float uDt, uTime, uDamp, uGravity;
+layout(std430,binding=4) readonly buffer Vtx { float vtx[]; }; // last frame's mesh (normals)
+uniform int uCount, uGN; uniform float uDt, uTime, uDamp, uGravity;
 uniform vec3 uWindDir; uniform float uBaseBreeze, uCurlStrength, uNoiseFreq, uScrollSpeed, uWindScale;
-uniform int uWindOn;
+uniform int uWindOn, uAero; uniform float uAeroCoeff, uAeroMaxRel;
 " + NoiseGLSL + @"
 vec3 windField(vec3 P){
     if (uWindOn==0) return vec3(0.0);
@@ -347,7 +394,21 @@ void main(){
     vec4 P = pos[g]; if (P.w == 0.0) return;       // pinned
     vec3 cur = P.xyz;
     vec3 vel = cur - prev[g].xyz;
-    vec3 acc = vec3(0.0,-uGravity,0.0) + windField(cur);
+    vec3 acc = vec3(0.0,-uGravity,0.0);
+    if (uAero != 0) {
+        // Aerodynamic coupling: quadratic normal pressure from the relative
+        // flow (see Program.cs). The surface normal is read from the render
+        // vertex buffer written by last frame's build pass — race-free, one
+        // frame stale, invisible at 240 substeps/s.
+        vec3 n = vec3(vtx[g*8u+3u], vtx[g*8u+4u], vtx[g*8u+5u]);
+        vec3 vrel = windField(cur) - vel/uDt;
+        float vr = length(vrel);
+        if (vr > uAeroMaxRel) vrel *= uAeroMaxRel/vr;
+        float f = dot(n, vrel);
+        acc += n * (uAeroCoeff * f * abs(f));
+    } else {
+        acc += windField(cur);
+    }
     vec3 np = cur + vel*uDamp + acc*(uDt*uDt);
     pos[g]  = vec4(np, P.w);
     prev[g] = vec4(cur, 0.0);
@@ -363,9 +424,10 @@ void main(){ uint g=gl_GlobalInvocationID.x; if (g<uint(uCount)) lam[g]=0.0; }";
 layout(local_size_x=256) in;
 layout(std430,binding=0) buffer Pos { vec4 pos[]; };
 layout(std430,binding=2) buffer Lam { float lam[]; };
-struct Con { ivec2 ab; float rest; float compliance; };
+struct Con { ivec2 ab; float rest; float pad; };
 layout(std430,binding=3) buffer Cons { Con cons[]; };
 uniform int uOffset, uColorCount; uniform float uDt;
+uniform float uCompliance; // per colour group, from the active material preset
 void main(){
     uint t = gl_GlobalInvocationID.x; if (t >= uint(uColorCount)) return;
     int c = uOffset + int(t);
@@ -375,12 +437,29 @@ void main(){
     float wa = PA.w, wb = PB.w, wsum = wa + wb; if (wsum == 0.0) return;
     vec3 d = PA.xyz - PB.xyz; float len = length(d); if (len < 1e-6) return;
     vec3 n = d/len; float C = len - con.rest;
-    float at = con.compliance/(uDt*uDt);
+    float at = uCompliance/(uDt*uDt);
     float dl = (-C - at*lam[c])/(wsum + at);
     lam[c] += dl;
     vec3 corr = dl*n;
     pos[a] = vec4(PA.xyz + wa*corr, PA.w);
     pos[b] = vec4(PB.xyz - wb*corr, PB.w);
+}";
+
+    // Ground plane: project particles up onto the floor and bleed off part of
+    // the horizontal slide (Verlet friction: nudge prev toward pos along the
+    // tangent), exactly mirroring FloorCollide() on the CPU path.
+    static readonly string FloorCS = @"#version 430
+layout(local_size_x=256) in;
+layout(std430,binding=0) buffer Pos  { vec4 pos[];  };
+layout(std430,binding=1) buffer Prev { vec4 prev[]; };
+uniform int uCount; uniform float uFloorY, uFriction;
+void main(){
+    uint g = gl_GlobalInvocationID.x; if (g >= uint(uCount)) return;
+    vec4 P = pos[g]; if (P.w == 0.0) return;       // pinned
+    if (P.y >= uFloorY) return;
+    pos[g] = vec4(P.x, uFloorY, P.z, P.w);
+    vec3 v = pos[g].xyz - prev[g].xyz;
+    prev[g].xz += v.xz * uFriction;
 }";
 
     static readonly string BuildCS = @"#version 430
